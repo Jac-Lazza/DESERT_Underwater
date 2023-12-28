@@ -15,36 +15,29 @@ import sys
 import json
 import socket
 import time
+import random
 
 ### CONSTANTS ###
-SESSION_ID = "00000000-0000-0000-0000-000000000001" #Universal unique identifier for this session
 
 APP_MODE_TX = "TX"
 APP_MODE_RX = "RX"
 
 PAYLOAD_SIZE = 30
-HEADER_SIZE = 2
+KEYRING_ID_SIZE = 2
+KEY_INDEX_SIZE = 2
+HEADER_SIZE = KEYRING_ID_SIZE + KEY_INDEX_SIZE
 PACKET_SIZE = HEADER_SIZE + PAYLOAD_SIZE
 
-SECRET_KEY = b""
+KEYRING = {}
 
 ### ~~~ ###
 
 ### Utility functions ###
 
-def parse_ip_port(data : str) -> (str, int):
-	data = data.split(":")
-	if(len(data) == 1):
-		return ("127.0.0.1", int(data[0]))
-	elif(len(data) == 2):
-		return (data[0], int(data[1]))
-	else:
-		raise Exception("Wrong address format")
-
-def xor_payload(payload : bytes, key_index : int) -> bytes:
+def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes: #TODO update this function
 	assert(len(payload) == PAYLOAD_SIZE)
 
-	otp_key = SECRET_KEY[key_index*PAYLOAD_SIZE : (key_index+1)*PAYLOAD_SIZE]
+	otp_key = KEYRING[keyring_id][key_index*PAYLOAD_SIZE : (key_index+1)*PAYLOAD_SIZE]
 	result = b""
 	for x,y in zip(payload, otp_key):
 		result += (x^y).to_bytes()
@@ -133,8 +126,8 @@ def qkd_close(qkd_socket : socket.socket, sessionid : str):
 
 if __name__ == "__main__":
 	### CLI-argument parsing
-	if(len(sys.argv) -1 != 4):
-		print("Usage: python3 OTP_app.py TX|RX DES_IP:DES_PORT QKD_IP:QKD_PORT data_filename")
+	if(len(sys.argv) -1 != 2): #Maybe make filename optional
+		print("Usage: python3 OTP_app.py TX|RX config.json")
 		sys.exit(1)
 	
 	app_mode = sys.argv[1].upper()
@@ -142,44 +135,54 @@ if __name__ == "__main__":
 		print("Avaiables app modes: TX or RX")
 		sys.exit(1)
 	
-	desert_address = parse_ip_port(sys.argv[2])
-	qkd_address = parse_ip_port(sys.argv[3])
-	filename = sys.argv[4]
+	print("Reading configuration file: " + sys.argv[2])
+	with open(sys.argv[2], "r") as file:
+		content = file.read()
+	config = json.loads(content)
+
+	desert_address = (config["DESERT"]["address"], config["DESERT"]["port"])
+	qkd_address = (config["QKD"]["address"], config["QKD"]["port"])
+	qkd_node_local = config["QKD"]["name"]
+	nodes = config["QKD"]["nodes"]
+	key_size = config["key_size"]
 
 	### QKD keymanager connection
-	print("Connecting to the QKD keymanager entity: ", qkd_address)
-	qkd_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
-	qkd_socket.connect(qkd_address)
+	for n in nodes:
+		qkd_node_remote = n["name"]
+		session_id = n["session_id"]
+		keyring_id = n["keyring_id"]
 
-	#################################################
-	# qkd_connect(qkd_socket, "1", "2", SESSION_ID) #
-	# qkd_get_status(qkd_socket, "2")               #
-	# qkd_get_key(qkd_socket, SESSION_ID)           #
-	# qkd_close(qkd_socket, SESSION_ID)             #
-	#################################################
-	
-	if(app_mode == APP_MODE_TX):
-		qkd_node_local = "alice1"
-		qkd_node_remote = "bob"
-	else:
-		qkd_node_local = "bob"
-		qkd_node_remote = "alice1"
-	
-	if(not qkd_connect(qkd_socket, qkd_node_local, qkd_node_remote, SESSION_ID)):
-		print("Error: Connection to the QKD network failed")
-		exit(1)
-	print("Connection to QKD network established...")
-	
-	time.sleep(5) #Syncronization time so that everybody connected to the network, not elegant but it works
+		print("[READY] uuid: " + session_id)
+		input("Press ENTER to start key exchange")
 
-	SECRET_KEY = qkd_get_key(qkd_socket, SESSION_ID)
-	
-	if(not qkd_close(qkd_socket, SESSION_ID)):
-		print("Warning: problems in closing the connection with QKD network")
+		qkd_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+		qkd_socket.connect(qkd_address)
 
+		if(not qkd_connect(qkd_socket, qkd_node_local, qkd_node_remote, session_id)):
+			print("[ERROR] Connection to the QKD network failed")
+			exit(1)
+		
+		time.sleep(5) #Syncronization time, must not be >= than 9
+
+		if(keyring_id in KEYRING.keys()):
+			print("[ERROR] keyring id already in use!")
+			exit(1)
+		secret_key = b""
+		while(len(secret_key) < key_size):
+			piece = qkd_get_key(qkd_socket, session_id)
+			if(piece == None):
+				print("[ERROR] Not enough bits for building secret key")
+				exit(1)
+			secret_key += piece
+		KEYRING[keyring_id] = secret_key
+
+		if(not qkd_close(qkd_socket, session_id)):
+			print("[WARNING] Problems in closing the connection with QKD network")
+		
+		qkd_socket.close()
+		print("Key exchange done!")
+	
 	print("Key setup finished!")
-	print("[DEBUG] size of key: ", len(SECRET_KEY))
-
 	input("Press ENTER to start " + app_mode)
 
 	### DESERT connection
@@ -188,20 +191,25 @@ if __name__ == "__main__":
 	desert_socket.connect(desert_address)
 
 	if(app_mode == APP_MODE_TX):
-		with open(filename, "r") as file:
-			content = file.read()
-		content = content.split("\n")[:-1]
+		key_indexes = {}
+		for k_id in KEYRING.keys():
+			key_indexes[k_id] = 0
 
-		key_index = 0
-		for payload in content:
-			#We momentarely assume that the payload is of PAYLOAD_SIZE size
-			print("Sending: ", payload)
-			encr_payload = xor_payload(payload.encode(), key_index)
-			key_index_header = key_index.to_bytes(length=HEADER_SIZE)
-			desert_socket.send(key_index_header + encr_payload)
-			key_index += 1
+		while(True):
+			k_id = random.choice(list(KEYRING.keys()))
+			payload = ((key_indexes[k_id]+1)%256).to_bytes(length=1)*PAYLOAD_SIZE
+			print("[{}] Sending: {}".format(k_id, payload))
+			
+			encr_payload = xor_payload(payload, k_id, key_indexes[k_id])
+			
+			keyring_id_header = k_id.to_bytes(length=KEYRING_ID_SIZE)
+			key_index_header = key_indexes[k_id].to_bytes(length=KEY_INDEX_SIZE)
+			desert_socket.send(keyring_id_header + key_index_header + encr_payload)
+
+			# print("DEBUG: ", keyring_id_header + key_index_header + encr_payload)
+
+			key_indexes[k_id] += 1
 			time.sleep(1)
-		print("TX done!")
 		
 	else: #app_mode == APP_MODE_RX
 		while(True):
@@ -209,11 +217,14 @@ if __name__ == "__main__":
 			if(data == b""):
 				print("RX done!")
 				break
-			
-			key_index = int.from_bytes(data[:HEADER_SIZE])
-			payload = xor_payload(data[HEADER_SIZE:], key_index)
-			print("Raw: ", data)
-			print("Received: ", payload.decode())
+			assert(len(data) == PACKET_SIZE)
+
+			k_id = int.from_bytes(data[:KEYRING_ID_SIZE])
+			key_index = int.from_bytes(data[KEYRING_ID_SIZE : HEADER_SIZE])
+			payload = xor_payload(data[HEADER_SIZE:], k_id, key_index)
+			print("[{}] Received: {}".format(k_id, payload))
+			# print("k_id ({}) and key_index ({})".format(k_id, key_index))
+			# print("DEBUG: ", data)
 	
 	#Releasing DESERT resources
 	desert_socket.close()
