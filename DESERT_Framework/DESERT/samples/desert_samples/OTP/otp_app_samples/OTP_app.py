@@ -37,6 +37,9 @@ KEYRING = {}
 def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes: #TODO update this function
 	assert(len(payload) == PAYLOAD_SIZE)
 
+	if(not keyring_id in KEYRING.keys()):
+		return None
+
 	otp_key = KEYRING[keyring_id][key_index*PAYLOAD_SIZE : (key_index+1)*PAYLOAD_SIZE]
 	result = b""
 	for x,y in zip(payload, otp_key):
@@ -206,8 +209,6 @@ if __name__ == "__main__":
 			key_index_header = key_indexes[k_id].to_bytes(length=KEY_INDEX_SIZE)
 			desert_socket.send(keyring_id_header + key_index_header + encr_payload)
 
-			# print("DEBUG: ", keyring_id_header + key_index_header + encr_payload)
-
 			key_indexes[k_id] += 1
 			time.sleep(1)
 		
@@ -222,9 +223,8 @@ if __name__ == "__main__":
 			k_id = int.from_bytes(data[:KEYRING_ID_SIZE])
 			key_index = int.from_bytes(data[KEYRING_ID_SIZE : HEADER_SIZE])
 			payload = xor_payload(data[HEADER_SIZE:], k_id, key_index)
-			print("[{}] Received: {}".format(k_id, payload))
-			# print("k_id ({}) and key_index ({})".format(k_id, key_index))
-			# print("DEBUG: ", data)
+			if(payload != None):
+				print("[{}] Received: {}".format(k_id, payload))
 	
 	#Releasing DESERT resources
 	desert_socket.close()
