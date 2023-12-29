@@ -25,8 +25,11 @@ APP_MODE_RX = "RX"
 PAYLOAD_SIZE = 30
 KEYRING_ID_SIZE = 2
 KEY_INDEX_SIZE = 2
+CHECKSUM_SIZE = 2
+
 HEADER_SIZE = KEYRING_ID_SIZE + KEY_INDEX_SIZE
-PACKET_SIZE = HEADER_SIZE + PAYLOAD_SIZE
+PACKET_SIZE = HEADER_SIZE + PAYLOAD_SIZE + CHECKSUM_SIZE
+KEY_SIZE = PAYLOAD_SIZE + CHECKSUM_SIZE
 
 KEYRING = {}
 
@@ -34,17 +37,30 @@ KEYRING = {}
 
 ### Utility functions ###
 
-def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes: #TODO update this function
-	assert(len(payload) == PAYLOAD_SIZE)
+def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes:
+	assert(len(payload) == KEY_SIZE)
 
 	if(not keyring_id in KEYRING.keys()):
 		return None
 
-	otp_key = KEYRING[keyring_id][key_index*PAYLOAD_SIZE : (key_index+1)*PAYLOAD_SIZE]
+	otp_key = KEYRING[keyring_id][key_index*KEY_SIZE : (key_index+1)*KEY_SIZE]
 	result = b""
 	for x,y in zip(payload, otp_key):
 		result += (x^y).to_bytes()
 	return result
+
+def checksum(data : bytes) -> bytes:
+	if(len(data)%2 != 0):
+		data += b"\x00"
+	
+	total = 0
+	for i in range(0, len(data), 2):
+		total += int.from_bytes(data[i : i+2])
+		if(total >= 2**16):
+			total += 1
+			total &= (2**16 -1)
+	
+	return total.to_bytes(length=2)
 
 ### ~~~ ###
 
@@ -62,7 +78,7 @@ def __send_request(qkd_socket : socket.socket, request : dict):
 	request = len(request).to_bytes(length=4) + request
 	qkd_socket.send(request)
 
-def __recv_response(qkd_socket : socket.socket, raw : bool = False) -> dict:
+def __recv_response(qkd_socket : socket.socket, raw : bool = False):
 	while(True):
 		size = qkd_socket.recv(4)
 		size = int.from_bytes(size)
@@ -90,7 +106,7 @@ def qkd_connect(qkd_socket : socket.socket, source : str, destination : str, ses
 	return response["parameters"]["STATUS"] == "0"
 	
 
-def qkd_get_status(qkd_socket : socket.socket, destination : str):
+def qkd_get_status(qkd_socket : socket.socket, destination : str) -> dict:
 	request = __init_qkd_request("QKDGETSTATUS")
 
 	request["parameters"]["DESTINATION"] = destination
@@ -100,7 +116,7 @@ def qkd_get_status(qkd_socket : socket.socket, destination : str):
 
 	return response
 
-def qkd_get_key(qkd_socket : socket.socket, sessionid : str, index : str = "", meta : str = ""):
+def qkd_get_key(qkd_socket : socket.socket, sessionid : str, index : str = "", meta : str = "") -> bytes:
 	request = __init_qkd_request("QKDGETKEY")
 
 	request["parameters"]["SESSIONID"] = sessionid
@@ -114,7 +130,7 @@ def qkd_get_key(qkd_socket : socket.socket, sessionid : str, index : str = "", m
 		#This means that the next transmission is going to be a key
 		return __recv_response(qkd_socket, True)
 
-def qkd_close(qkd_socket : socket.socket, sessionid : str):
+def qkd_close(qkd_socket : socket.socket, sessionid : str) -> bool:
 	request = __init_qkd_request("QKDCLOSE")
 
 	request["parameters"]["SESSIONID"] = sessionid
@@ -203,11 +219,25 @@ if __name__ == "__main__":
 			payload = ((key_indexes[k_id]+1)%256).to_bytes(length=1)*PAYLOAD_SIZE
 			print("[{}] Sending: {}".format(k_id, payload))
 			
-			encr_payload = xor_payload(payload, k_id, key_indexes[k_id])
-			
 			keyring_id_header = k_id.to_bytes(length=KEYRING_ID_SIZE)
 			key_index_header = key_indexes[k_id].to_bytes(length=KEY_INDEX_SIZE)
+			chk_trailer = checksum(keyring_id_header + key_index_header + payload)
+
+			encr_payload = xor_payload(payload + chk_trailer, k_id, key_indexes[k_id])
+
+			#Section to remove, just for testing purposes
+			if(random.randint(1,10) == 10):
+				key_index_header = b"\x00\x00"
+				print("Packet is compromised")
+			###
+
 			desert_socket.send(keyring_id_header + key_index_header + encr_payload)
+
+			# encr_payload = xor_payload(payload, k_id, key_indexes[k_id])
+			
+			# keyring_id_header = k_id.to_bytes(length=KEYRING_ID_SIZE)
+			# key_index_header = key_indexes[k_id].to_bytes(length=KEY_INDEX_SIZE)
+			# desert_socket.send(keyring_id_header + key_index_header + encr_payload)
 
 			key_indexes[k_id] += 1
 			time.sleep(1)
@@ -222,9 +252,17 @@ if __name__ == "__main__":
 
 			k_id = int.from_bytes(data[:KEYRING_ID_SIZE])
 			key_index = int.from_bytes(data[KEYRING_ID_SIZE : HEADER_SIZE])
-			payload = xor_payload(data[HEADER_SIZE:], k_id, key_index)
-			if(payload != None):
-				print("[{}] Received: {}".format(k_id, payload))
+			
+			content = xor_payload(data[HEADER_SIZE:], k_id, key_index)
+			if(content != None):
+				payload = content[:-CHECKSUM_SIZE]
+				
+				rcv_chk = content[-CHECKSUM_SIZE:]
+				cmp_chk = checksum(data[:HEADER_SIZE] + payload)
+				if(rcv_chk == cmp_chk):
+					print("[{}] Received: {}".format(k_id, payload))
+				else:
+					print("Packed failed checksum check!")
 	
 	#Releasing DESERT resources
 	desert_socket.close()
