@@ -1,0 +1,19 @@
+{
+     "DESERT": {
+          "address": "127.0.0.1",
+          "port": 5556
+     },
+     "QKD": {
+          "address": "127.0.0.1",
+          "port": 8015,
+          "name": "bob",
+          "nodes": [
+               {
+                    "name": "alice1",
+                    "session_id": "00000000-0000-0000-0000-000000000002",
+                    "keyring_id": 2
+               }
+          ]
+     },
+     "key_size": 2000
+}
