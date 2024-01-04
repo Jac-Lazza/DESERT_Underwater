@@ -1,14 +1,20 @@
 #!/usr/bin/python3
 
 """
-Author: Jacopo Lazzarin
-Version: 1.0
-Simple script that works as a bridge between the open soruce DESERT framework
-and the closed source QKD project for the University of Padua.
-Simply put, the scripts gets a random key from a QKD network and then uses a
-Vernam cipher (also known as One Time Pad) for encrypting the data to send.
-At the moment it supports just one simplex connection.
-This script is intended for experimental and demonstration purposes.
+	One Time Pad application
+
+	Simple script that works as a bridge between the open soruce DESERT framework
+	and the closed source QKD project for the University of Padua.
+	Simply put, the scripts gets a random key from a QKD network and then uses a
+	Vernam cipher (also known as One Time Pad) for encrypting the data to send.
+	
+	At the moment it can support multiple simplex connections.
+	Also, a ciphered checksum is used as a digital signature for checking each
+	packet integrity.
+	
+	This script is only intended for experimental and demonstration purposes.
+
+	Author: Jacopo Lazzarin
 """
 
 import sys
@@ -31,13 +37,23 @@ HEADER_SIZE = KEYRING_ID_SIZE + KEY_INDEX_SIZE
 PACKET_SIZE = HEADER_SIZE + PAYLOAD_SIZE + CHECKSUM_SIZE
 KEY_SIZE = PAYLOAD_SIZE + CHECKSUM_SIZE
 
-KEYRING = {}
+KEYRING = {} #Where all the OTPs are going to be stored
 
 ### ~~~ ###
 
 ### Utility functions ###
 
-def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes:
+def xor_payload(payload : bytes, keyring_id : int, key_index : int) -> bytes:
+	"""
+		Encrypts or decrypts the whole payload using a portion of the OTP 
+		identified by keyring_id. The key_index parameter is used to select 
+		the correct portion of the OTP to use.
+
+		This function requires that the length of the payload is equal to
+		the length of the key used, where with key we refer to the portion
+		of the OTP used.
+	"""
+
 	assert(len(payload) == KEY_SIZE)
 
 	if(not keyring_id in KEYRING.keys()):
@@ -49,20 +65,12 @@ def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes:
 		result += (x^y).to_bytes()
 	return result
 
-# def checksum(data : bytes) -> bytes:
-# 	if(len(data)%2 != 0):
-# 		data += b"\x00"
-	
-# 	total = 0
-# 	for i in range(0, len(data), 2):
-# 		total += int.from_bytes(data[i : i+2])
-# 		if(total >= 2**16):
-# 			total += 1
-# 			total &= (2**16 -1)
-	
-# 	return total.to_bytes(length=2)
-
 def checksum(data : bytes) -> bytes:
+	"""
+		Implements the standard IP checksum described by
+		Jon Postel in RFC 791
+	"""
+
 	total = 0
 
 	for i in range(0, len(data), 2):
@@ -79,9 +87,16 @@ def checksum(data : bytes) -> bytes:
 
 ### ~~~ ###
 
-### QKD interface functions ###
+### QKD interface helper functions ###
 
 def __init_qkd_request(command : str) -> dict:
+	"""
+		Returns a request template valid for any call
+		to the QKD keymanager API.
+
+		This function should only be used by qkd_* functions.
+	"""
+
 	request_template = {}
 	request_template["command"] = command
 	request_template["parameters"] = {}
@@ -89,17 +104,47 @@ def __init_qkd_request(command : str) -> dict:
 	return request_template
 
 def __send_request(qkd_socket : socket.socket, request : dict):
+	"""
+		Sends a request to the QKD keymanager entity.
+		
+		The data to be sent is serialized in such a way
+		that it is understandable by the Qt socket on the other end.
+		
+		The serialization is simple: add 4 bytes that indicates the size
+		of the next bytestring that is going to be sent.
+
+		This function should only be used by qkd_* functions. 
+	"""
+
 	request = json.dumps(request).encode()
 	request = len(request).to_bytes(length=4) + request
 	qkd_socket.send(request)
 
 def __recv_response(qkd_socket : socket.socket, raw : bool = False):
+	"""
+		Waits and returns a response from the QKD keymanager entity.
+
+		The data is serialized in such a wai that it is understandable
+		by the Qt socket on the other end. Refer to __send_request documentation
+		for details on the serialization.
+
+		If the raw flag is False then the data received is interpreted as a JSON,
+		otherwise the bytestring is returned as is (this is useful when receiving
+		a key).
+
+		Note: The HEARTBEAT string is sent by the QKD keymanager to keep alive
+		the connection. It can happen that between a request and a response such
+		string is read instead.
+		Since I cannot modify this behaviour of the keymanager, whenever the HEARBEAT
+		string is read it is immediately discarded.
+
+		This function should only be used by qkd_* functions.
+	"""
+
 	while(True):
 		size = qkd_socket.recv(4)
 		size = int.from_bytes(size)
 		response = qkd_socket.recv(size)
-		# print("DEBUG size: ", size)
-		# print("DEBUG response: ", response)
 		if(response != b"HEARTBEAT"):
 			break
 	if(not raw):
@@ -107,7 +152,18 @@ def __recv_response(qkd_socket : socket.socket, raw : bool = False):
 	else:
 		return response
 
+### QKD keymanager API ###
+
 def qkd_connect(qkd_socket : socket.socket, source : str, destination : str, sessionid : str, qos : dict = {}) -> bool:
+	"""
+		Creates a connection between source and destination. A sessionid is provided a priori 
+		so that the QKD keymanager will not generate its own.
+
+		qkd_socket is connected to the QKD keymanager.
+		source and destination must be valid node names of the QKD entities.
+		sessionid must be a UUID
+	"""
+
 	request = __init_qkd_request("QKDOPEN")
 
 	request["parameters"]["SOURCE"] = source
@@ -122,6 +178,13 @@ def qkd_connect(qkd_socket : socket.socket, source : str, destination : str, ses
 	
 
 def qkd_get_status(qkd_socket : socket.socket, destination : str) -> dict:
+	"""
+		Returns the status of the QKD node named destination.
+
+		qkd_socket is connected to the QKD manager.
+		destination must be a valid node name of the QKD entity.
+	"""
+
 	request = __init_qkd_request("QKDGETSTATUS")
 
 	request["parameters"]["DESTINATION"] = destination
@@ -132,6 +195,13 @@ def qkd_get_status(qkd_socket : socket.socket, destination : str) -> dict:
 	return response
 
 def qkd_get_key(qkd_socket : socket.socket, sessionid : str, index : str = "", meta : str = "") -> bytes:
+	"""
+		Returns a random key from the QKD network.
+		If no key is avaiable then None is returned.
+
+		sessionid must be a UUID of a valid connection between two QKD nodes.
+	"""
+
 	request = __init_qkd_request("QKDGETKEY")
 
 	request["parameters"]["SESSIONID"] = sessionid
@@ -146,6 +216,12 @@ def qkd_get_key(qkd_socket : socket.socket, sessionid : str, index : str = "", m
 		return __recv_response(qkd_socket, True)
 
 def qkd_close(qkd_socket : socket.socket, sessionid : str) -> bool:
+	"""
+		Closes the connection between two QKD nodes.
+
+		sessionid must be a UUID of a valid connection between two QKD nodes.
+	"""
+
 	request = __init_qkd_request("QKDCLOSE")
 
 	request["parameters"]["SESSIONID"] = sessionid
@@ -196,7 +272,11 @@ if __name__ == "__main__":
 			print("[ERROR] Connection to the QKD network failed")
 			exit(1)
 		
-		time.sleep(5) #Syncronization time, must not be >= than 9
+		#Synchronization time, must not be >= than 9
+		#Otherwise the connection with the QKD keymanager is interrupted.
+		#This behaviour is programmed into the QKD keymanager for the moment.
+		#This script can only adapt to it.
+		time.sleep(5)
 
 		if(keyring_id in KEYRING.keys()):
 			print("[ERROR] keyring id already in use!")
@@ -240,7 +320,10 @@ if __name__ == "__main__":
 
 			encr_payload = xor_payload(payload + chk_trailer, k_id, key_indexes[k_id])
 
-			#Section to remove, just for testing purposes
+			#To check the correctness of the digital signature
+			#every now and then the header of a packet gets corrupted
+			#the received should be able to detect the corruption and
+			#should discard the packet
 			if(random.randint(1,10) == 10):
 				key_index_header = b"\x00\x00"
 				print("Packet is compromised")
@@ -248,18 +331,12 @@ if __name__ == "__main__":
 
 			desert_socket.send(keyring_id_header + key_index_header + encr_payload)
 
-			# encr_payload = xor_payload(payload, k_id, key_indexes[k_id])
-			
-			# keyring_id_header = k_id.to_bytes(length=KEYRING_ID_SIZE)
-			# key_index_header = key_indexes[k_id].to_bytes(length=KEY_INDEX_SIZE)
-			# desert_socket.send(keyring_id_header + key_index_header + encr_payload)
-
 			key_indexes[k_id] += 1
-			time.sleep(5) #Momentaneamente
+			#TODO: Does DESERT have problems if we send data too fast? Configure this waiting time
+			time.sleep(5) 
 		
 	else: #app_mode == APP_MODE_RX
 		while(True):
-			# data = desert_socket.recv(PACKET_SIZE)
 			data = b""
 			while(len(data) < PACKET_SIZE):
 				part_data = desert_socket.recv(PACKET_SIZE - len(data))
