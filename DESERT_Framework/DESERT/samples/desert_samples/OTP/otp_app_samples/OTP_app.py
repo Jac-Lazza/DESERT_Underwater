@@ -49,18 +49,33 @@ def xor_payload(payload : bytes, keyring_id : int,key_index : int) -> bytes:
 		result += (x^y).to_bytes()
 	return result
 
-def checksum(data : bytes) -> bytes:
-	if(len(data)%2 != 0):
-		data += b"\x00"
+# def checksum(data : bytes) -> bytes:
+# 	if(len(data)%2 != 0):
+# 		data += b"\x00"
 	
+# 	total = 0
+# 	for i in range(0, len(data), 2):
+# 		total += int.from_bytes(data[i : i+2])
+# 		if(total >= 2**16):
+# 			total += 1
+# 			total &= (2**16 -1)
+	
+# 	return total.to_bytes(length=2)
+
+def checksum(data : bytes) -> bytes:
 	total = 0
+
 	for i in range(0, len(data), 2):
 		total += int.from_bytes(data[i : i+2])
-		if(total >= 2**16):
+		if(total >= 0x010000):
 			total += 1
-			total &= (2**16 -1)
+			total &= 0xFFFF
 	
+	total = 0xFFFF - total
+
 	return total.to_bytes(length=2)
+	
+
 
 ### ~~~ ###
 
@@ -145,7 +160,7 @@ def qkd_close(qkd_socket : socket.socket, sessionid : str) -> bool:
 
 if __name__ == "__main__":
 	### CLI-argument parsing
-	if(len(sys.argv) -1 != 2): #Maybe make filename optional
+	if(len(sys.argv) -1 != 2):
 		print("Usage: python3 OTP_app.py TX|RX config.json")
 		sys.exit(1)
 	
