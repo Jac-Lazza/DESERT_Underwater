@@ -239,7 +239,6 @@ if {$opt(AppSocket) == 1} {
 Module/UW/APPLICATION set drop_out_of_order_ 1    
 Module/UW/APPLICATION set pattern_sequence_ 0     
 Module/UW/APPLICATION set EXP_ID_ $opt(exp_ID)
-Module/UW/APPLICATION set max_read_length 30
 
 # variables for the S2C modem's interface
 Module/UW/UwModem/EvoLogicsS2C set debug_		 1

@@ -22,7 +22,7 @@ import random
 APP_MODE_TX = "TX"
 APP_MODE_RX = "RX"
 
-PAYLOAD_SIZE = 30
+PAYLOAD_SIZE = 20
 KEYRING_ID_SIZE = 2
 KEY_INDEX_SIZE = 2
 CHECKSUM_SIZE = 2
@@ -240,15 +240,20 @@ if __name__ == "__main__":
 			# desert_socket.send(keyring_id_header + key_index_header + encr_payload)
 
 			key_indexes[k_id] += 1
-			time.sleep(1)
+			time.sleep(5) #Momentaneamente
 		
 	else: #app_mode == APP_MODE_RX
 		while(True):
-			data = desert_socket.recv(PACKET_SIZE)
-			if(data == b""):
-				print("RX done!")
-				break
-			assert(len(data) == PACKET_SIZE)
+			# data = desert_socket.recv(PACKET_SIZE)
+			data = b""
+			while(len(data) < PACKET_SIZE):
+				part_data = desert_socket.recv(PACKET_SIZE - len(data))
+				if(part_data == b""):
+					print("RX done!")
+					desert_socket.close()
+					sys.exit(0)
+
+				data += part_data
 
 			k_id = int.from_bytes(data[:KEYRING_ID_SIZE])
 			key_index = int.from_bytes(data[KEYRING_ID_SIZE : HEADER_SIZE])
