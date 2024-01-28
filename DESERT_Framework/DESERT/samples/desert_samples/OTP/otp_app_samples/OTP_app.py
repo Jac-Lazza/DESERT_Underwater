@@ -318,8 +318,8 @@ if __name__ == "__main__":
 				exit(1)
 			SECRET_KEY += secret
 		
-		if(not qkd_close(qkd_socket, session_id)):
-			print("[WARNING] Problems in closing the connection with QKD network")
+		# if(not qkd_close(qkd_socket, session_id)):
+		# 	print("[WARNING] Problems in closing the connection with QKD network")
 		
 		qkd_socket.close()
 		print_log(log_file, "Key exchange done! [{} B]".format(len(SECRET_KEY)))
